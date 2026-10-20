@@ -156,6 +156,9 @@ button { font-weight: 600; padding: 8px 16px }
 .result li small { font-size: 12px; color: var(--muted) }
 .result li .ck { width: 20px; height: 20px; font-size: 11px }
 .closing { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; padding-block: 16px 4px }
+.savebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted) }
+.savedot { width: 8px; height: 8px; border-radius: 50%; background: var(--y) }
+button.mini { font-size: 12px; padding: 4px 10px; border-width: 1px }
 </style>
 
 <div class="wrap">
@@ -167,7 +170,10 @@ button { font-weight: 600; padding: 8px 16px }
     <div class="namebox">
       <input type="text" id="name" data-k="name" placeholder="이름 (예: 김여주)" aria-label="이름">
     </div>
-    <p class="privacy">적은 내용은 이 휴대폰 브라우저에만 저장됩니다. 강사나 다른 분은 볼 수 없어요. 맨 아래 「전체 복사」로 카톡 나와의 채팅에 보관해 두세요.</p>
+    <p class="privacy">글자를 칠 때마다 이 휴대폰에 자동 저장돼요. 인스타그램에 다녀오거나 브라우저를 껐다 켜도 그대로 남아 있어요. 강사나 다른 분은 볼 수 없어요.</p>
+    <div class="savebar"><span class="savedot" aria-hidden="true"></span><span id="saveState">자동 저장 켜짐</span><button class="btn-ghost mini" type="button" id="backupBtn">백업 링크 복사</button><span class="copied" id="backupMsg" aria-live="polite"></span></div>
+    <p class="warn" id="storageWarn" hidden></p>
+    <div class="warn" id="restoreBar" hidden><b>백업 링크로 들어왔어요.</b> 이 링크에 담긴 기록을 불러올까요? <div class="btnrow" style="margin-top:8px"><button class="btn-red" type="button" id="restoreBtn">이 기록 불러오기</button><button class="btn-ghost mini" type="button" id="restoreSkip">그냥 두기</button></div></div>
   </header>
 
   <nav class="chips" aria-label="교시 바로가기">
@@ -509,7 +515,42 @@ button { font-weight: 600; padding: 8px 16px }
   var KEY = 'yeoju-activity-2026-10-21';
   var state = {};
   try { state = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { state = {}; }
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
+  var storageOK = true;
+  try { localStorage.setItem(KEY + '-t', '1'); localStorage.removeItem(KEY + '-t'); } catch (e) { storageOK = false; }
+  var saveTimer = null;
+  function stamp() {
+    var d = new Date(), hh = String(d.getHours()).padStart(2, '0'), mm = String(d.getMinutes()).padStart(2, '0');
+    var el = document.getElementById('saveState');
+    if (el) el.textContent = storageOK ? '자동 저장됨 · ' + hh + ':' + mm : '이 브라우저는 저장이 안 돼요';
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { storageOK = false; }
+    clearTimeout(saveTimer); saveTimer = setTimeout(stamp, 250);
+  }
+  // write once more whenever the page is hidden (switching to Instagram, locking the phone)
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') save(); });
+  window.addEventListener('pagehide', save);
+
+  // backup link: the whole record packed into the link's #fragment (compressed when the browser can)
+  var BASE = 'https://soriginal-studio.github.io/yeoju-activity-note/';
+  function b64url(bytes) { var s = ''; bytes.forEach(function (b) { s += String.fromCharCode(b); }); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+  function unb64url(str) { str = str.replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; var bin = atob(str), out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+  async function packState() {
+    var bytes = new TextEncoder().encode(JSON.stringify(state));
+    if (window.CompressionStream) {
+      var zs = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+      return 'z' + b64url(new Uint8Array(await new Response(zs).arrayBuffer()));
+    }
+    return 'p' + b64url(bytes);
+  }
+  async function unpackState(code) {
+    var bytes = unb64url(code.slice(1));
+    if (code[0] === 'z') {
+      var zs = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      bytes = new Uint8Array(await new Response(zs).arrayBuffer());
+    }
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
   function v(k) { return (state[k] || '').toString().trim(); }
   function $(id) { return document.getElementById(id); }
 
@@ -859,6 +900,32 @@ button { font-weight: 600; padding: 8px 16px }
   $('pdfBtn').addEventListener('click', makePdf);
 
   bind(); renderOneWord(); renderAll();
+  stamp();
+  var inApp = /KAKAOTALK|Instagram|FBAN|FBAV|NAVER\(inapp|Line\//i.test(navigator.userAgent);
+  if (!storageOK || inApp) {
+    var w = $('storageWarn'); w.hidden = false;
+    w.textContent = !storageOK
+      ? '이 브라우저(또는 개인정보 보호 모드)에서는 저장이 안 돼요. 사파리나 크롬 일반 창으로 열어주세요.'
+      : '카카오톡·인스타 안에서 열면 저장이 사라질 수 있어요. 오른쪽 위 메뉴 → 「다른 브라우저로 열기」(사파리·크롬)로 열어주세요.';
+  }
+  $('backupBtn').addEventListener('click', async function () {
+    var m = $('backupMsg');
+    try {
+      var link = BASE + '#d=' + await packState();
+      try { await navigator.clipboard.writeText(link); m.textContent = '복사했어요. 카톡 「나와의 채팅」에 붙여넣어 두세요'; }
+      catch (e) { m.textContent = '복사가 막혀 있어요. 「전체 복사」를 이용해 주세요'; }
+    } catch (e) { m.textContent = '이 브라우저에서는 백업 링크를 만들 수 없어요'; }
+  });
+  (async function () {
+    var h = location.hash || '';
+    if (h.indexOf('#d=') !== 0) return;
+    var incoming;
+    try { incoming = await unpackState(h.slice(3)); } catch (e) { return; }
+    var bar = $('restoreBar'); bar.hidden = false;
+    function clearHash() { try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} bar.hidden = true; }
+    $('restoreBtn').addEventListener('click', function () { state = incoming; save(); bind(); renderOneWord(); renderAll(); clearHash(); });
+    $('restoreSkip').addEventListener('click', clearHash);
+  })();
 })();
 </script>
 </body></html>
